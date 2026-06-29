@@ -75,6 +75,9 @@ jobs:
 
   deploy:
     name: Deploy to Kubernetes
+    # self-hosted runner + 클러스터가 준비됐을 때만 실행 (repo 변수 DEPLOY_ENABLED=true).
+    # 미설정이면 skipped → 빌드/푸시까지만 완료되어 무기한 Pending·실패 Deployment 방지.
+    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
     runs-on: [self-hosted, linux, x64]
     needs: build-and-push
     environment: production
