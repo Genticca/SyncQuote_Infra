@@ -5,66 +5,70 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: api-server
+  namespace: default                        # [추가] namespace 명시
   labels:
-    app: api-server # Service/Ingress에서 이 label로 Pod를 찾아 트래픽 전달
+    app: api
 spec:
-  replicas: 2 # 다이어그램 기준 API Pod A, B 2개 / 1개면 단일 장애점(SPOF) 발생
+  replicas: 2                               # 다이어그램 기준 API Pod A, B 2개 / 1개면 단일 장애점(SPOF) 발생
   selector:
     matchLabels:
-      app: api-server # 위 labels와 반드시 일치해야 Deployment가 Pod를 인식
+      app: api
   template:
     metadata:
       labels:
-        app: api-server # Pod에 붙는 label / Service가 이 label로 로드밸런싱 대상 선정
+        app: api                            # Service(api-service)가 이 라벨을 보고 로드밸런싱 수행
     spec:
-      - containers:
-        - name: api-server
-          image: my-repo/bitcoin-api:v1.2.3 # latest 대신 고정 버전 / latest는 언제 바뀔지 몰라 재현성 없음
-          ports:
-            - containerPort: 80 # 앱이 실제 listening하는 포트 / 코드 설정과 반드시 일치해야 함
-          resources:
-            requests:
-              memory:
-                "256Mi" # Pod 스케줄링 시 최소 보장 메모리
-                # 노드에 256Mi 여유 없으면 해당 노드엔 배치 안 됨
-              cpu: "200m" # 0.2 core 보장 / 1000m = 1core
-            limits:
-              memory:
-                "512Mi" # 최대 사용 가능 메모리
-                # 초과 시 OOMKilled로 Pod 강제 종료 → requests의 2배가 일반적 권장
-              cpu:
-                "500m" # 최대 0.5 core / 초과해도 종료는 안되고 throttling(속도 제한)만 걸림
-                # [requests vs limits 관계]
-                # requests: 노드에서 "이만큼은 써야해" 예약
-                # limits:   노드에서 "이 이상은 못써" 상한선
-                # limits >= requests 이어야 하며, 너무 차이나면 노드 리소스 낭비 발생
-          livenessProbe: # 컨테이너 생존 여부 체크 / 실패 시 Pod 재시작
-            httpGet:
-              path: /health # 앱 내부에 /health 엔드포인트 구현 필요
-              port: 80
-            initialDelaySeconds:
-              15 # 컨테이너 시작 후 15초 뒤부터 체크 시작
-              # 앱 기동 시간보다 짧으면 기동 중에 재시작 반복됨
-            periodSeconds: 20 # 20초마다 /health 호출 / 너무 짧으면 부하, 너무 길면 장애 감지 늦음
-          readinessProbe: # 트래픽 수신 준비 여부 체크 / 실패 시 Service 로드밸런싱 대상에서 제외
-            httpGet: # [liveness vs readiness 차이]
-              path: /ready # liveness 실패 → Pod 재시작
-              port: 80 # readiness 실패 → 트래픽 차단 (재시작 X)
-            initialDelaySeconds: 5 # liveness보다 짧게 / 준비되는 즉시 트래픽 받을 수 있도록
-            periodSeconds: 10 # liveness보다 자주 체크 / 트래픽 유입 타이밍을 빠르게 감지
-          env:
-            - name: SPRING_PROFILES_ACTIVE
-              value: "api" # Spring Boot 프로파일 prod로 실행 / dev, test 등 환경별 분기 처리용
-            - name: MODE
-              value: "API" # 앱 내부에서 Collector/API 모드 분기 처리용
-            - name: DB_URL
-              value: "mysql-service" # K8s Service 이름으로 접근 / IP 대신 Service명 사용 (IP는 Pod 재시작마다 바뀜)
-            - name: DB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: db-secret # kubectl create secret으로 생성한 Secret 이름
-                  key: password # YAML에 평문 노출 방지 / git에 올려도 실제 값은 안 보임
-            - name: REDIS_URL
-              value: "redis-service" # 다이어그램 기준 Redis GET으로 캐시 조회 / DB 부하 감소 목적
-            - name: REDIS_PORT
-              value: "6379" # Redis 기본 포트
+      automountServiceAccountToken: false   # 불필요한 K8s API 접근 차단 / 보안 강화
+      nodeSelector:
+        node-role.kubernetes.io/worker: "true"
+      containers:
+      - name: api-server
+        image: my-repo/bitcoin-dashboard:v1.0.0  # 단일 이미지 / 프로파일로 모드 분기
+        ports:
+        - containerPort: 80                 # 앱이 실제 listening하는 포트
+          name: http
+          protocol: TCP
+        resources:
+          requests:
+            memory: "256Mi"                 # requests == limits → Guaranteed 등급
+            cpu: "200m"                     # 0.2 core 보장 / 1000m = 1core
+            ephemeral-storage: "1Gi"        # 스토리지 고정 / Guaranteed 완전체
+          limits:
+            memory: "256Mi"                 # 원칙2: 메모리 완전 Fix
+            cpu: "500m"                     # 최대 0.5 core / 초과 시 throttling
+            ephemeral-storage: "1Gi"
+        livenessProbe:                      # 컨테이너 생존 여부 체크 / 실패 시 Pod 재시작
+          httpGet:
+            path: /actuator/health/liveness # Spring Boot 2.3+ 표준 엔드포인트
+            port: 80
+          initialDelaySeconds: 40           # 스프링 부트 완전 구동까지 대기
+          periodSeconds: 20
+          failureThreshold: 3
+        readinessProbe:                     # 트래픽 수신 준비 여부 체크 / 실패 시 로드밸런싱 대상 제외
+          httpGet:
+            path: /actuator/health/readiness # Spring Boot 2.3+ 표준 엔드포인트
+            port: 80
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          failureThreshold: 3
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: "api"                      # api 모드로 기동
+        - name: MODE
+          value: "API"                      # 앱 내부에서 Collector/API 모드 분기 처리용
+        - name: DB_URL
+          value: "mysql-service"            # K8s Service 이름 / IP 대신 사용 (IP는 재시작마다 바뀜)
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secret              # secret.yaml의 name과 일치
+              key: mysql-password           # secret.yaml의 key와 일치
+        - name: REDIS_URL
+          value: "redis-api-service"        # 원칙1: api 전용 Redis 분리
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_PASSWORD              # [추가] redis-api에 requirepass 설정했으므로 반드시 필요
+          valueFrom:
+            secretKeyRef:
+              name: app-secret              # secret.yaml의 name과 일치
+              key: redis-password           # secret.yaml의 key와 일치

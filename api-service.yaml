@@ -1,1 +1,19 @@
-#API 서비스 (Ingress) 연동
+# api-service.yaml
+# API 서비스 (Ingress) 연동
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service                   # ingress.yaml의 backend.service.name과 반드시 일치
+  namespace: default
+  labels:
+    app: api
+spec:
+  type: ClusterIP                     # 클러스터 내부망 전용 / Ingress가 내부에서 라우팅
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80                          # Ingress → Service 진입 포트
+    targetPort: 80                    # Service → api Pod 전달 포트 / containerPort(80)와 반드시 일치
+  selector:
+    app: api                          # api-deployment.yaml의 template.metadata.labels.app과 일치

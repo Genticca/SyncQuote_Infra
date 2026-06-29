@@ -1,61 +1,23 @@
-# hpa.yaml
-# API 서버 오토스케일링 설정
+# ingress.yaml
+# 외부 사용자가 도메인 or IP 접속 시 클러스터 내부의 api-service로 연결되도록 Ingress 설정
 
-apiVersion: autoscaling/v2          # autoscaling/v2 사용 (v1은 CPU만 지원, v2는 메모리 등 다중 메트릭 지원)
-kind: HorizontalPodAutoscaler
+apiVersion: networking.k8s.io/v1
+kind: Ingress
 metadata:
-  name: api-server-hpa
-  labels:
-    app: api-server                 # Deployment label과 일치시켜 관리 편의성 확보
+  name: api-server-ingress
+  namespace: default
+  annotations:
+    kubernetes.io/ingress.class: "nginx"          # Nginx Ingress Controller 사용 명시
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"  # 업로드 파일 용량 제한 10mb
 spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: api-server                # 이 HPA가 조절할 Deployment 이름 / api-deployment.yaml의 metadata.name과 반드시 일치
-  minReplicas: 2                    # 최소 Pod 수 / 다이어그램 기준 API Pod A, B = 2 유지
-  maxReplicas: 5                    # 최대 Pod 수 / 노드 리소스 한계 고려해서 설정
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 70      # 전체 Pod 평균 CPU가 70% 넘으면 스케일 아웃
-                                    # 너무 낮으면 (ex 50%) 불필요한 스케일 아웃 빈번
-                                    # 너무 높으면 (ex 90%) 스케일 아웃 전에 이미 부하 집중
-  - type: Resource
-    resource:
-      name: memory
-      target:
-        type: Utilization
-        averageUtilization: 80      # 메모리 80% 넘으면 스케일 아웃
-                                    # 메모리는 CPU보다 반응이 느려 기준값을 높게 잡음
-  behavior:
-    scaleUp:
-      # stabilizationWindowSeconds: 30    # 스케일 아웃 전 30초 관찰
-                                        # 순간 스파이크로 인한 불필요한 스케일 아웃 방지
-      stabilizationWindowSeconds: 0     # 부하 감지 시 즉시 늘려야 서비스 장애를 막을 수 있음
-      policies:
-      - type: Percent
-        value: 100                      # 한 번에 최대 100%까지 늘림 / 급격한 증가 방지
-        periodSeconds: 15               # 15초마다 스케일 아웃 여부 판단
-      - type: Pods
-        value: 2                        # 한 번에 최대 2개씩 늘림
-        periodSeconds: 15               # 15초마다 스케일 아웃 여부 판단
-      selectPolicy: Max                     # 여러 정책 중 가장 큰 값으로 스케일 아웃 / 급격한 증가 방지
-    scaleDown:
-      stabilizationWindowSeconds: 300   # 스케일 인 전 300초(5분) 관찰
-                                        # 트래픽이 줄었다고 바로 줄이면 다시 몰릴 때 대응 못함
-      policies:
-      - type: Percent
-        value: 100                      # 유예기간 5분 지나면 HPA 판단하에 필요한 만큼 시원하게 줄여버리기
-        periodSeconds: 15               # 15초마다 스케일 인 여부 판단
-
-# 트래픽 급증 → CPU 70% 초과
-#    → 즉시(0초) 감지
-#    → 15초마다 Max(Percent 100 or Pods 2) 선택해서 스케일 아웃
-#    → 최대 5개까지
-
-# 트래픽 감소 → CPU 70% 이하
-#   → 5분(300초) 관찰
-#    → 15초마다 최대 100% 줄임 → minReplicas 2개까지
+  rules:
+  - host: "api.yourdomain.com"          # 실제 서비스할 도메인으로 변경 / IP 접근 시 이 라인 삭제
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api-service           # api-service.yaml의 metadata.name과 반드시 일치
+            port:
+              number: 80                # api-service.yaml의 port(80)와 반드시 일치

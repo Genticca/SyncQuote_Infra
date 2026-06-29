@@ -1,4 +1,4 @@
-# adb.yaml
+# pdb.yaml
 # API 서버 PodDisruptionBudget 설정
 # PodDisruptionBudget(PDB) = 클러스터 관리자가 노드 유지보수, 업그레이드 등으로 인해 Pod를 강제로 종료해야 할 때, 최소한의 Pod 수를 유지하도록 보장하는 정책
 # 서비스 가용성을 확보
