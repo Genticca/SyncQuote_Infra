@@ -1,0 +1,25 @@
+# ingress.yaml
+# 외부 사용자가 도메인 or IP 접속 시 클러스터 내부의 api-service로 연결되도록 Ingress 설정
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-server-ingress
+  namespace: default
+  annotations:
+    # Nginx Ingress Controller를 사용한다고 명시
+    kubernetes.io/ingress.class: "nginx"
+    # 업로드 파일 용량 제한 증가 등 필요한 Nginx 설정이 있다면 추가 가능
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  rules:
+  - host: "api.yourdomain.com"          # 👈 실제 서비스할 본인 도메인으로 변경 (IP 접근 시 이 라인 삭제 가능)
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api-service          # 이전에 정의한 WAS 서비스 이름과 정확히 일치
+            port:
+              number: 8080             # api-service가 노출하는 포트 번호와 일치

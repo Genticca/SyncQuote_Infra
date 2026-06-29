@@ -1,1 +1,0 @@
-# SyncQuote_Infra

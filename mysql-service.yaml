@@ -1,0 +1,42 @@
+# mysql-service.yaml
+# MySQL은 K8s 클러스터 외부 VM에 있으므로 ExternalName 또는 Endpoints 방식 사용
+# [방식 비교]
+# ExternalName: DNS로 외부 호스트명 연결 / 도메인이 있을 때 사용
+# Endpoints:    IP로 직접 외부 VM 연결 / IP가 고정돼 있을 때 사용 ← 현재 VMware VM이므로 이 방식 사용
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-service                 # collector/api deployment의 DB_URL 환경변수 값과 반드시 일치
+  labels:
+    app: mysql                        # 관리 편의성을 위한 label
+spec:
+  type: ClusterIP                     # 클러스터 내부에서만 접근 / MySQL은 외부 노출 불필요
+  ports:
+  - name: mysql
+    protocol: TCP
+    port: 3306                        # Service가 내부 Pod에 노출하는 포트
+    targetPort: 3306                  # 외부 VM MySQL 포트 / Endpoints의 포트와 반드시 일치
+---
+# Endpoints: selector 없는 Service에 외부 IP를 수동으로 연결
+# selector가 없으면 K8s가 자동으로 Pod을 찾지 않고 Endpoints를 직접 참조
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: mysql-service                 # Service name과 반드시 일치해야 연결됨
+  labels:
+    app: mysql
+subsets:
+- addresses:
+  - ip: 192.168.0.100                 # ← VMware DB Server VM의 실제 고정 IP로 변경 필요
+  ports:
+  - name: mysql
+    port: 3306                        # VM에서 실행 중인 MySQL 포트
+
+
+# collector/api Pod
+#     ↓ mysql-service:3306
+# mysql-service (ClusterIP)
+#     ↓ Endpoints 참조
+# 192.168.0.100:3306 (VMware DB Server VM)
+#     ↓
+# MySQL Server

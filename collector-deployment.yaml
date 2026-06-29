@@ -1,0 +1,56 @@
+# collector-deployment.yaml
+# 데이터 수집기 배포
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: collector-deployment
+  labels:
+    app: collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: collector
+  template:
+    metadata:
+      labels:
+        app: collector
+    spec:
+
+    automountServiceAccountToken: false  
+      
+    nodeSelector:
+      node-role.kubernetes.io/worker: "true"
+    containers:
+        - name: collector
+          image: my-repo/bitcoin-collector:v1.2.3
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          livenessProbe:
+            exec:
+              # command: ["/bin/sh", "-c", "ps aux | grep collector"] # 프로세스 확인
+              # [변경] ps aux | grep collector (프로세스 존재 여부만 확인 -> 항상 통과, 실제 장애 감지 불가)
+              # -> redis-cli ping (Redis 실제 연결 여부 확인 -> 연결 끊기면 Pod 재시작)
+              command: ["/bin/sh", "-c", "redis-cli -h redis-service ping"] # HTTP 상태 확인 -> 장애 감지 가능
+            initialDelaySeconds: 30 # Collector 기동 후 Redis 연결 안정화까지 대기
+            periodSeconds: 60 # 60초마다 Redis 연결 상태 체크
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "collector" # Spring Boot 프로파일 prod로 실행 / dev, test 등 환경별 분기 처리용
+            - name: MODE
+              value: "COLLECTOR" # API 서버와 구분되는 Collector 전용 모드
+            - name: REDIS_URL
+              value: "redis-service" # Redis Pod와 통신하는 K8s Service 이름
+            - name: DB_URL
+              value: "mysql-service" # 아카이빙용 MySQL Service 이름 (거래 데이터 영구 저장)
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret # kubectl create secret 으로 생성한 Secret 이름
+                  key: password # Secret 내 password 키값 참조 (평문 노출 방지)

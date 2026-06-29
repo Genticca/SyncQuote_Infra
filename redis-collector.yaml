@@ -1,0 +1,74 @@
+# redis-collector.yaml
+#collcetor용 Redis 배포
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-collector
+  labels:
+    app: redis-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-collector
+  template:
+    metadata:
+      labels:
+        app: redis-collector
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        node-role.kubernetes.io/worker: "true"
+      containers:
+      - name: redis
+        image: redis:7.2
+        ports:
+        - containerPort: 6379
+        command: ["redis-server"]
+        args:
+        - "--maxmemory"
+        - "180mb"                      # [Fix] 데이터 한계선 고정
+        - "--maxmemory-policy"
+        - "allkeys-lru"
+        - "--appendonly"
+        - "no"
+        resources:
+          requests:
+            memory: "256Mi"            # [Fix] 물리 자원 독점 고정
+            cpu: "200m"
+            ephemeral-storage: "512Mi"
+          limits:
+            memory: "256Mi"            # [Fix]
+            cpu: "300m"
+            ephemeral-storage: "512Mi"
+        livenessProbe:
+          exec:
+            command: ["redis-cli", "ping"]
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          exec:
+            command: ["redis-cli", "ping"]
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+      volumes:
+      - name: redis-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-collector-service
+spec:
+  selector:
+    app: redis-collector
+  ports:
+  - name: redis
+    protocol: TCP
+    port: 6379
+    targetPort: 6379
+  type: ClusterIP
