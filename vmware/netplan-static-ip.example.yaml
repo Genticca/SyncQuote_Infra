@@ -1,0 +1,42 @@
+# netplan-static-ip.example.yaml
+# VMware VM에 "고정 IP"를 주는 게스트 OS(Ubuntu 22.04) 설정 예시.
+#
+# [왜 게스트 OS에서 잡나]
+#   create-syncquote-vms.sh는 bridged + ethernet0.addressType="generated"(자동 MAC)이라
+#   VM이 부팅 시 LAN의 DHCP에서 "유동 IP"를 받는다. VMX 파일 자체엔 고정 IP 개념이 없다.
+#   따라서 고정 IP는 다음 둘 중 하나로 준다:
+#     (A) 게스트 OS netplan으로 직접 고정 (이 파일) — 가장 확실, 권장
+#     (B) 라우터에서 MAC→IP DHCP 예약 (VMX에 ethernet0.address로 고정 MAC 지정 후)
+#   Endpoints(MySQL/Redis)는 IP가 바뀌면 깨지므로 sq-data-01/sq-mysql-01은 고정 필수.
+#
+# [적용 방법 — 각 VM에서]
+#   1) 이 내용을 VM의 /etc/netplan/01-static.yaml 로 복사
+#   2) 아래 값을 "그 VM"의 것으로 수정 (인터페이스명 / addresses / gateway / DNS)
+#   3) sudo netplan apply
+#   4) ip -4 addr 로 고정 IP 적용 확인
+#
+# [주의]
+#   - 인터페이스명은 VM마다 다를 수 있다(ens33/ens160 등): `ip -br link` 로 확인.
+#   - addresses 는 호스트 LAN 대역에 맞추고, 라우터 DHCP 풀과 겹치지 않는 IP를 쓴다(충돌 방지).
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ens33:                              # ← `ip -br link`로 확인한 실제 인터페이스명으로 교체
+      dhcp4: false
+      addresses:
+        - 192.168.0.101/24              # ← 이 VM의 고정 IP (예: sq-data-01). LAN 대역/마스크에 맞게 교체
+      routes:
+        - to: default
+          via: 192.168.0.1              # ← LAN 게이트웨이(공유기) IP로 교체
+      nameservers:
+        addresses: [192.168.0.1, 8.8.8.8]   # ← DNS (보통 게이트웨이 + 공용 DNS)
+
+# -----------------------------------------------------------------------------
+# [권장 IP 배치 — 실제 LAN 대역 확인 후 확정]
+#   sq-k8s-01    : 192.168.0.10   (Ingress 진입점 / 노드)
+#   sq-data-01   : 192.168.0.101  (Redis)  → data/redis-collector.yaml 의 Endpoints IP
+#   sq-mysql-01  : 192.168.0.100  (MySQL)  → mysql/mysql-service.yaml 의 Endpoints IP
+#   ※ 위 IP는 예시. 실제 LAN(예: 192.168.0.x / 192.168.1.x / 10.0.0.x)과
+#     DHCP 풀 범위를 확인해 충돌 없는 값으로 확정한 뒤, 위 두 매니페스트 Endpoints에 반영한다.
+# -----------------------------------------------------------------------------

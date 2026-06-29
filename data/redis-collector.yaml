@@ -1,0 +1,68 @@
+# redis-collector.yaml
+# 수집용 Redis — K8s 클러스터 "밖" sq-data-01 VM에서 직접 실행한다.
+# (이전: 클러스터 안 Pod(Deployment + emptyDir) → 변경: 외부 VM을 Service+Endpoints로 연결)
+#
+# [왜 외부 VM인가]
+#   방침상 Redis는 sq-data-01(Redis + Collector/Archive VM)에 위치한다.
+#   MySQL과 동일한 "selector 없는 Service + Endpoints" 패턴으로 사설망 VM을 가리킨다.
+#   "외부"는 = 클러스터 밖 / 사설망 안. K8s 입장에선 여전히 ClusterIP(내부 전용)이며
+#   인터넷 노출이 아니다. (MySQL과 통신 범위 동일)
+#
+# [통신 경로]
+#   collector/archiver Pod → redis-collector-service:6379 (ClusterIP)
+#                          → Endpoints 참조 → 192.168.0.101:6379 (sq-data-01 VM, 같은 사설망)
+#
+# [VM의 redis.conf로 옮겨야 하는 설정 — 이전에 Pod args에 있던 것들]
+#   maxmemory 180mb
+#   maxmemory-policy noeviction      # [정합성] 가득 차도 축출 금지 → 새 쓰기 거부(조용한 유실 방지).
+#                                    #   수집 버퍼(Stream)는 ack 전까지 보존돼야 하므로 lru 금지.
+#   requirepass <app-secret의 redis-password와 동일 값>   # [보안] 클러스터가 보내는 비번과 일치해야 함
+#   appendonly yes                   # [정합성+영속] VM은 디스크가 있으니 AOF를 켜서 재시작 생존 확보.
+#                                    #   (Pod(emptyDir) 시절 미뤄둔 "재시작 생존"을 외부 VM에서 자연 해결)
+#   bind 0.0.0.0  (또는 노드가 닿는 사설 IP)  # 127.0.0.1만 bind하면 클러스터에서 접근 불가
+#   protected-mode yes
+#
+# [보호 — 클러스터 밖이라 NetworkPolicy 적용 불가]
+#   redis-collector는 더 이상 Pod가 아니므로 NetworkPolicy(podSelector)로 보호할 수 없다.
+#   → network-policy.yaml에서 redis-collector-strict-policy 제거됨.
+#   → 대신 sq-data-01 VM 방화벽에서 "K8s 노드 IP만 6379 허용" + requirepass로 이중 보호한다.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-collector-service       # collector/archiver deployment의 REDIS_ADDR 값과 반드시 일치
+  namespace: default
+  labels:
+    app: redis-collector              # 관리 편의용 label (selector 아님)
+spec:
+  type: ClusterIP                     # 클러스터 내부 전용 / 외부 VM이어도 인터넷 노출 아님
+  ports:
+  - name: redis
+    protocol: TCP
+    port: 6379                        # Service가 클러스터 내부에 노출하는 포트
+    targetPort: 6379                  # 외부 VM Redis 포트 / Endpoints 포트와 반드시 일치
+  # selector 없음 → K8s가 Pod를 찾지 않고 아래 Endpoints를 직접 참조한다(MySQL과 동일 패턴)
+---
+# Endpoints: selector 없는 Service에 외부 VM IP를 수동으로 연결
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: redis-collector-service       # Service name과 반드시 일치해야 연결됨
+  namespace: default
+  labels:
+    app: redis-collector
+subsets:
+- addresses:
+  - ip: 192.168.0.101                 # ← sq-data-01 Redis VM의 실제 고정 IP로 변경 필요
+  ports:
+  - name: redis
+    port: 6379                        # VM에서 실행 중인 Redis 포트
+
+
+# collector/archiver Pod
+#     ↓ redis-collector-service:6379
+# redis-collector-service (ClusterIP, selector 없음)
+#     ↓ Endpoints 참조
+# 192.168.0.101:6379 (sq-data-01 Redis VM, 사설망)
+#     ↓
+# Redis Server (redis.conf: noeviction + appendonly yes + requirepass)

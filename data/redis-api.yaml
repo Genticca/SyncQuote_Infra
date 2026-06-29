@@ -29,6 +29,13 @@ spec:
         image: redis:7.2                    # 고정 버전 사용 / latest 사용 시 예기치 않은 업데이트 위험
         ports:
         - containerPort: 6379               # Redis 기본 포트
+        securityContext:                    # [하드닝] redis는 6379(>1024)라 cap 불필요 → drop ALL 안전.
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop: ["ALL"]
+          # runAsNonRoot/readOnlyRootFS 미적용: /data(emptyDir) 쓰기 권한 이슈 회피.
         command: ["redis-server"]
         args:
         - "--maxmemory"

@@ -1,0 +1,61 @@
+# front-deployment.yaml
+# SyncQuote 프론트(Vue3 + Vite) 정적 서빙 — nginx
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: front-server
+  namespace: default
+  labels:
+    app: front
+spec:
+  replicas: 2                               # 정적 서빙이라 가볍게 2개 (SPOF 회피)
+  selector:
+    matchLabels:
+      app: front
+  template:
+    metadata:
+      labels:
+        app: front                          # front-service가 이 라벨로 라우팅
+    spec:
+      automountServiceAccountToken: false   # 불필요한 K8s API 접근 차단
+      nodeSelector:
+        node-role.kubernetes.io/worker: "true"
+      imagePullSecrets:
+      - name: ghcr-secret                   # GHCR private 이미지 pull용
+      containers:
+      - name: front
+        image: ghcr.io/genticca/syncquote-front:latest   # CI(deploy-front.yml)가 배포 시 :sha로 교체
+        ports:
+        - containerPort: 80
+          name: http
+          protocol: TCP
+        securityContext:                    # [하드닝] 무위험 베이스라인만.
+                                            # nginx가 80(<1024) 바인딩 + 루트로 cache/pid 기록 →
+                                            # runAsNonRoot/readOnlyRootFS는 nginx-unprivileged 이미지 필요.
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+            ephemeral-storage: "256Mi"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+            ephemeral-storage: "256Mi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 20
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 10
+          failureThreshold: 3

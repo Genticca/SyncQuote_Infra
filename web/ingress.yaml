@@ -1,0 +1,36 @@
+# ingress.yaml
+# 단일 진입점에서 경로로 분기:
+#   /api/v1  → api-service   (Spring 컨트롤러가 이미 /api/v1 제공 → rewrite 불필요)
+#   /        → front-service (Vue SPA)
+# SSE(/api/v1/stream/*) 응답을 위해 버퍼링 off + 타임아웃 상향.
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: syncquote-ingress
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"      # SSE 스트리밍 즉시 전달
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx                   # (구) annotation kubernetes.io/ingress.class 대체
+  rules:
+  - http:                                   # host 미지정 = IP/임의 호스트 모두 매칭
+                                            # 도메인 사용 시 'host: api.example.com' 추가
+      paths:
+      - path: /api/v1                        # API + SSE
+        pathType: Prefix
+        backend:
+          service:
+            name: api-service               # api-service.yaml의 metadata.name과 일치
+            port:
+              number: 80
+      - path: /                              # SPA 프론트 (catch-all)
+        pathType: Prefix
+        backend:
+          service:
+            name: front-service             # front-service.yaml의 metadata.name과 일치
+            port:
+              number: 80

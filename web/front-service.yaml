@@ -1,0 +1,19 @@
+# front-service.yaml
+# 프론트 Service (Ingress의 "/" 경로 backend)
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: front-service                 # ingress.yaml의 "/" backend.service.name과 일치
+  namespace: default
+  labels:
+    app: front
+spec:
+  type: ClusterIP
+  selector:
+    app: front                        # front-deployment의 Pod 라벨과 일치
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: 80

@@ -1,0 +1,31 @@
+# hpa.yaml
+# API 서버 HorizontalPodAutoscaler — CPU 사용률 기반 자동 스케일
+# 전제:
+#   - metrics-server 설치 (kubectl top pods 가 동작해야 함)
+#   - 대상 Deployment에 resources.requests.cpu 설정 (api-deployment: 200m ✓)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-server-hpa
+  namespace: default
+  labels:
+    app: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-server                  # web/api-deployment.yaml의 metadata.name과 일치
+  minReplicas: 2                       # PDB minAvailable:1 + 기본 2 Pod 유지
+  maxReplicas: 4                       # 단일 노드(6GB) 용량 고려 상한
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70         # 평균 CPU 70% 초과 시 스케일 아웃
+  behavior:                            # 잦은 스케일 변동(플래핑) 완화
+    scaleDown:
+      stabilizationWindowSeconds: 300  # 5분간 낮게 유지돼야 축소
+    scaleUp:
+      stabilizationWindowSeconds: 60

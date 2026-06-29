@@ -1,0 +1,6 @@
+# mysql/kustomization.yaml
+# MySQL VM(sq-mysql-01) 외부 연결(Service+Endpoints): kubectl apply -k mysql/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - mysql-service.yaml

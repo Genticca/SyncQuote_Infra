@@ -1,0 +1,167 @@
+# collector-deployment.yaml
+# 수집기(Collector) + 아카이버(Archiver) — 같은 Go 이미지를 RUN_MODE로 분리 운영
+#   - collector : 거래소 WebSocket 수집 → Redis 적재            (Redis만 필요)
+#   - archiver  : Redis → 1초봉→1분봉 연산 → MySQL 영속화        (Redis + MySQL 필요)
+# 이미지는 1개(ghcr.io/genticca/syncquote-collector). RUN_MODE 환경변수만 다르다.
+#
+# [주의] 이 매니페스트는 Go crypto-collector의 환경변수 계약에 맞춘다.
+#   Redis : REDIS_ADDR(host:port 단일) + REDIS_PASSWORD
+#   MySQL : MYSQL_HOST/MYSQL_PORT/MYSQL_USER/MYSQL_PASSWORD/MYSQL_DATABASE
+#   Probe : Go가 띄우는 /healthz (HTTP :8080) — Spring /actuator 아님
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: collector-deployment
+  namespace: default
+  labels:
+    app: collector
+spec:
+  replicas: 1                               # 싱글톤 전제 / 2개 이상이면 중복 수집
+  selector:
+    matchLabels:
+      app: collector
+  template:
+    metadata:
+      labels:
+        app: collector
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        node-role.kubernetes.io/worker: "true"
+      imagePullSecrets:
+      - name: ghcr-secret
+      containers:
+      - name: collector
+        image: ghcr.io/genticca/syncquote-collector:latest   # CI(deploy-collector.yml)가 배포 시 :sha로 교체
+        ports:
+        - containerPort: 8080
+          name: health
+          protocol: TCP
+        securityContext:                    # [하드닝] distroless:nonroot 이미지 → 풀 하드닝 안전
+          runAsNonRoot: true
+          runAsUser: 65532                  # distroless nonroot UID
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true      # Go 바이너리·디스크 미사용 → 읽기전용 가능
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop: ["ALL"]                   # 헬스서버 8080(>1024)이라 NET_BIND_SERVICE 불필요
+        env:
+        - name: RUN_MODE
+          value: "collector"               # 수집 전용 (MySQL 불필요)
+        - name: REDIS_ADDR
+          value: "redis-collector-service:6379"   # Go: host:port 단일 변수
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: redis-password
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+            ephemeral-storage: "512Mi"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+            ephemeral-storage: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /healthz                  # common/health.go가 제공
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 20
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: archiver-deployment
+  namespace: default
+  labels:
+    app: archiver
+spec:
+  replicas: 1                               # 싱글톤 / 동일 키 중복 UPSERT 방지
+  selector:
+    matchLabels:
+      app: archiver
+  template:
+    metadata:
+      labels:
+        app: archiver
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        node-role.kubernetes.io/worker: "true"
+      imagePullSecrets:
+      - name: ghcr-secret
+      containers:
+      - name: archiver
+        image: ghcr.io/genticca/syncquote-collector:latest   # collector와 동일 이미지
+        ports:
+        - containerPort: 8080
+          name: health
+          protocol: TCP
+        securityContext:                    # [하드닝] distroless:nonroot 이미지 → 풀 하드닝 안전
+          runAsNonRoot: true
+          runAsUser: 65532                  # distroless nonroot UID
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true      # Go 바이너리·디스크 미사용 → 읽기전용 가능
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop: ["ALL"]                   # 헬스서버 8080(>1024)이라 NET_BIND_SERVICE 불필요
+        env:
+        - name: RUN_MODE
+          value: "archiver"                # 연산 → MySQL 영속화 전용
+        - name: REDIS_ADDR
+          value: "redis-collector-service:6379"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: redis-password
+        - name: MYSQL_HOST
+          value: "mysql-service"
+        - name: MYSQL_PORT
+          value: "3306"
+        - name: MYSQL_USER
+          value: "syncquote"
+        - name: MYSQL_DATABASE
+          value: "syncquote"
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: mysql-password
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+            ephemeral-storage: "512Mi"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+            ephemeral-storage: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /healthz                  # Redis + MySQL 연결 동시 확인
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 20
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
