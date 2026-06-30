@@ -29,7 +29,7 @@ metadata:
     app: mysql
 subsets:
 - addresses:
-  - ip: 192.168.0.100                 # ← VMware DB Server VM의 실제 고정 IP로 변경 필요
+  - ip: 172.16.116.100                 # ← sq-mysql-01 고정 IP (확정 2026-06-30)
   ports:
   - name: mysql
     port: 3306                        # VM에서 실행 중인 MySQL 포트
@@ -39,6 +39,6 @@ subsets:
 #     ↓ mysql-service:3306
 # mysql-service (ClusterIP)
 #     ↓ Endpoints 참조
-# 192.168.0.100:3306 (VMware DB Server VM)
+# 172.16.116.100:3306 (VMware DB Server VM)
 #     ↓
 # MySQL Server
