@@ -24,8 +24,18 @@ spec:
       target:
         type: Utilization
         averageUtilization: 70         # 평균 CPU 70% 초과 시 스케일 아웃
-  behavior:                            # 잦은 스케일 변동(플래핑) 완화
-    scaleDown:
-      stabilizationWindowSeconds: 300  # 5분간 낮게 유지돼야 축소
+  behavior:                            # 잦은 스케일 변동(플래핑) 완화 + 스케일 "속도" 상한
     scaleUp:
       stabilizationWindowSeconds: 60
+      selectPolicy: Max                # 정책이 1개라 Max/Min 동일 — 명시만
+      policies:
+      - type: Pods
+        value: 1                       # 한 스텝(60초)당 최대 +1 Pod — 단일 노드(6GB) 급증 과부하 방지
+        periodSeconds: 60              #   (미설정 시 기본 +4 Pod/+100% per 15s = 사실상 무제한)
+    scaleDown:
+      stabilizationWindowSeconds: 300  # 5분간 낮게 유지돼야 축소
+      selectPolicy: Max
+      policies:
+      - type: Pods
+        value: 1                       # 한 스텝(120초)당 최대 -1 Pod — 천천히 축소(플래핑 방지)
+        periodSeconds: 120
