@@ -1,0 +1,8 @@
+# kustomization.yaml (loadtest/k8s)
+# kubectl apply -k loadtest/k8s/  로 A안 부하기를 한 번에 배포.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - 00-namespace.yaml
+  - 10-k6-script-configmap.yaml
+  - 20-k6-job.yaml
