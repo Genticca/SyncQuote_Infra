@@ -53,12 +53,19 @@ func (w *Writer) SaveCandle(ctx context.Context, c SecondCandle) {
 	}
 
 	pipe := w.rdb.Pipeline()
+	// (A) API 실시간 차트용 List — TTL+개수상한. 유실돼도 무해(캐시).
 	pipe.RPush(ctx, key, data)
 	// 최근 candleMaxLen개만 유지 (-N ~ -1 = 뒤에서 N개). 비정상 증가 방어선.
 	pipe.LTrim(ctx, key, -candleMaxLen, -1)
 	pipe.Expire(ctx, key, DataTTL)
+	// (B) MySQL 적재 보장용 Stream — TTL 없음. 아카이버가 ack할 때까지 보존된다.
+	//     (정합성 핵심: 적재 확인 전엔 절대 안 지움)
+	pipe.XAdd(ctx, &redis.XAddArgs{
+		Stream: CandleStreamKey(),
+		Values: map[string]interface{}{"json": string(data)},
+	})
 	// Pipeline 실행 실패 = Redis 적재 실패 = 데이터 유실. 반드시 로깅한다.
-	// (이전: pipe.Exec(ctx) 반환값을 무시해 유실이 조용히 발생했음)
+	// (noeviction이면 메모리 가득 시 여기서 에러 → 조용한 유실 대신 가시화)
 	if _, err := pipe.Exec(ctx); err != nil {
 		log.Printf("[writer] 캔들 적재 실패 key=%s: %v", key, err)
 	}

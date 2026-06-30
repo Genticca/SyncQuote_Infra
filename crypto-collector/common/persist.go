@@ -11,11 +11,11 @@
 //   설계한 그 배치)
 //
 // [동작]
-//   60초마다:
-//     - candles:1s:*:*  → 각 List를 읽어 candle 테이블로 (exchange 구분 유지)
-//     - ticker:*:*      → 각 Stream의 최신 1건을 ticker_snapshot 으로
-//     - markets:*       → 각 Hash를 market 테이블로
-//   TTL(90초)이 배치주기(60초)보다 길어, 옮기기 전에 사라지지 않는다.
+//   주기마다:
+//     - candles:1s:stream → consumer group으로 소비(ack-then-trim) → 1분봉 적재
+//       (적재 확인 전엔 ack 안 함 → 유실 방지. List는 API 실시간용으로 분리)
+//     - ticker:*:*        → 각 Stream의 최신 1건을 ticker_latest 로
+//     - markets:*         → 각 Hash를 market 테이블로
 //
 // [거래소 구분]
 //   키가 candles:1s:upbit:KRW-BTC 처럼 exchange를 품고 있으므로, 키를 파싱해
@@ -72,9 +72,9 @@ func (a *Archiver) Run(ctx context.Context, interval time.Duration) {
 // candles/ticker_latest 가 market_info 를 FK로 참조하므로, 페어가 먼저
 // 있어야 캔들·현재가 INSERT 시 FK 위반이 안 난다.
 func (a *Archiver) archiveOnce(ctx context.Context) {
-	markets := a.archiveMarkets(ctx) // 1) FK 부모 먼저
-	candles := a.archiveCandles(ctx) // 2) 캔들
-	tickers := a.archiveTickers(ctx) // 3) 현재가
+	markets := a.archiveMarkets(ctx)       // 1) FK 부모 먼저
+	candles := a.archiveCandlesStream(ctx) // 2) 캔들 (Stream consumer group)
+	tickers := a.archiveTickers(ctx)       // 3) 현재가
 	log.Printf("[archive] 완료: 페어 %d, 캔들 %d, 현재가 %d\n", markets, candles, tickers)
 }
 
@@ -97,46 +97,157 @@ func (a *Archiver) scanKeys(ctx context.Context, pattern string) []string {
 	return keys
 }
 
-// archiveCandles : candles:1s:{exchange}:{code} List(1초봉)를 읽어
-// "1분봉으로 집계"한 뒤 candle 테이블에 candle_unit='1m'으로 저장한다.
+// 캔들 영속화용 Stream consumer group 설정.
+const (
+	candleGroup    = "archiver"   // consumer group 이름
+	candleConsumer = "archiver-1" // consumer 이름(고정 → 재시작해도 같은 PEL 재개)
+	candlePageSize = 2000         // XReadGroup 1회 페이지 크기
+)
+
+// EnsureCandleGroup : 캔들 Stream과 consumer group을 보장한다(없으면 생성).
+// "0"부터 시작해 기존 백로그도 빠짐없이 소비한다. main이 아카이버 기동 전 1회 호출.
+func EnsureCandleGroup(ctx context.Context, rdb *redis.Client) {
+	err := rdb.XGroupCreateMkStream(ctx, CandleStreamKey(), candleGroup, "0").Err()
+	if err != nil && !strings.Contains(err.Error(), "BUSYGROUP") {
+		log.Printf("[archive] consumer group 생성 실패: %v", err)
+	}
+}
+
+// streamCandle : Stream 항목 1건 (ID + 원본 JSON + 파싱된 1초봉).
+type streamCandle struct {
+	id  string
+	raw string
+	c   SecondCandle
+}
+
+// archiveCandlesStream : 캔들 Stream을 consumer group으로 소비해 "완성된 분"을
+// 1분봉으로 집계·MySQL 적재하고, 적재에 성공한 분의 항목만 XACK + XDEL 한다.
 //
-// [왜 1분봉으로 묶나]
-//
-//	1초봉을 그대로 저장하면 종목 수백 개 × 초당 1개라 데이터가 폭증한다.
-//	60개의 1초봉을 1분봉 1개로 합치면 데이터가 60배 줄고, 과거 차트용으로도
-//	1분봉이 표준이다. (실시간 1초 디테일은 Redis가 담당)
-//
-// [완성된 분만 저장]
-//
-//	현재 진행 중인 분(아직 60초가 안 지난 분)은 미완성이라 저장하지 않는다.
-//	현재 시각의 "분"보다 이전 분들만 확정된 것으로 보고 저장한다.
-func (a *Archiver) archiveCandles(ctx context.Context) int {
-	count := 0
-	// 현재 분의 시작 시각(Unix). 이 시각 이상인 1초봉은 "아직 진행 중인 분"이라 제외.
+// [정합성 핵심]
+//   - 항목은 ack 전까지 PEL(대기목록)에 남는다 → MySQL 적재 성공 후에만 ack.
+//   - 적재 실패/크래시 → 미ack → 다음 사이클 재처리(at-least-once).
+//   - candle PK UPSERT라 재처리해도 중복 없음(사실상 정확히 한 번).
+//   - 진행 중인 분(미완성)의 항목은 ack하지 않아 다음 사이클까지 보존된다.
+func (a *Archiver) archiveCandlesStream(ctx context.Context) int {
+	entries := a.readCandleEntries(ctx)
+	if len(entries) == 0 {
+		return 0
+	}
+	// 현재 분의 시작 시각(Unix). 이 시각 이상인 1초봉은 "진행 중인 분"이라 제외.
 	currentMinuteStart := time.Now().Unix() / 60 * 60
 
-	for _, key := range a.scanKeys(ctx, "candles:1s:*:*") {
-		items, err := a.rdb.LRange(ctx, key, 0, -1).Result()
-		if err != nil {
-			log.Printf("[archive] LRange 실패 key=%s: %v", key, err)
-			continue
+	// 종목별로 묶는다. (aggregateMinuteCandles는 단일 종목 입력을 전제하므로)
+	type bucket struct {
+		jsons       []string
+		idsByMinute map[int64][]string
+	}
+	buckets := make(map[string]*bucket)
+	for _, e := range entries {
+		sym := e.c.Exchange + ":" + e.c.Code
+		b := buckets[sym]
+		if b == nil {
+			b = &bucket{idsByMinute: make(map[int64][]string)}
+			buckets[sym] = b
 		}
+		b.jsons = append(b.jsons, e.raw)
+		m := e.c.Time / 60 * 60
+		b.idsByMinute[m] = append(b.idsByMinute[m], e.id)
+	}
 
-		// [역할 분리] 1초봉 → 1분봉 "집계(연산)"는 순수 함수에 위임하고,
-		// 여기서는 "읽기(Redis) → 저장(MySQL)"이라는 I/O만 담당한다.
-		// 이렇게 분리해 두면 집계 로직을 독립적으로 테스트할 수 있고, 나중에
-		// 별도 Calculator 프로세스로 떼어낼 때 이 함수만 그대로 옮기면 된다.
-		candles := aggregateMinuteCandles(items, currentMinuteStart)
-
-		for i := range candles {
-			if err := SaveCandleToMySQL(ctx, a.db, candles[i], "1m"); err != nil {
+	count := 0
+	var ackDel []string
+	for _, b := range buckets {
+		// 완성된 분만 1분봉으로 집계 (순수 함수 재사용).
+		for _, candle := range aggregateMinuteCandles(b.jsons, currentMinuteStart) {
+			if err := SaveCandleToMySQL(ctx, a.db, candle, "1m"); err != nil {
 				log.Println("[archive] 1분봉 저장 실패:", err)
-				continue
+				continue // ack 안 함 → 다음 사이클 재처리
 			}
 			count++
+			// 이 완성분을 구성한 1초봉 항목들만 ack/del 대상에 추가.
+			ackDel = append(ackDel, b.idsByMinute[candle.Time]...)
+		}
+	}
+
+	// 적재 확인된 항목만 ack(PEL 제거) 후 del(메모리 회수). 미완성 분 항목은 보존.
+	if len(ackDel) > 0 {
+		if err := a.rdb.XAck(ctx, CandleStreamKey(), candleGroup, ackDel...).Err(); err != nil {
+			log.Printf("[archive] XACK 실패: %v", err)
+		}
+		if err := a.rdb.XDel(ctx, CandleStreamKey(), ackDel...).Err(); err != nil {
+			log.Printf("[archive] XDEL 실패: %v", err)
 		}
 	}
 	return count
+}
+
+// readCandleEntries : consumer의 미ack 항목(PEL)과 새 항목(">")을 모두 읽어 파싱한다.
+// PEL을 먼저 읽어 "지난 사이클의 미완성 분 + 재시작 후 복구분"을 재처리한다.
+func (a *Archiver) readCandleEntries(ctx context.Context) []streamCandle {
+	var out []streamCandle
+
+	collect := func(streams []redis.XStream) (n int, lastID string) {
+		for _, st := range streams {
+			for _, msg := range st.Messages {
+				n++
+				lastID = msg.ID
+				raw, _ := msg.Values["json"].(string)
+				if raw == "" {
+					continue
+				}
+				var c SecondCandle
+				if json.Unmarshal([]byte(raw), &c) != nil {
+					continue
+				}
+				out = append(out, streamCandle{id: msg.ID, raw: raw, c: c})
+			}
+		}
+		return n, lastID
+	}
+
+	read := func(from string) ([]redis.XStream, error) {
+		return a.rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
+			Group:    candleGroup,
+			Consumer: candleConsumer,
+			Streams:  []string{CandleStreamKey(), from},
+			Count:    candlePageSize,
+			Block:    -1, // 논블로킹 (데이터 없으면 즉시 반환)
+		}).Result()
+	}
+
+	// 1) 미ack 항목(PEL) — 커서로 페이지네이션 ("0"부터, 마지막 ID로 진행)
+	cursor := "0"
+	for {
+		streams, err := read(cursor)
+		if err != nil {
+			if err != redis.Nil {
+				log.Printf("[archive] XReadGroup(PEL) 실패: %v", err)
+			}
+			break
+		}
+		n, lastID := collect(streams)
+		if n < candlePageSize || lastID == "" {
+			break
+		}
+		cursor = lastID
+	}
+
+	// 2) 새 항목(">") — 소비될수록 자동 진행하므로 반복 호출로 드레인
+	for {
+		streams, err := read(">")
+		if err != nil {
+			if err != redis.Nil {
+				log.Printf("[archive] XReadGroup(new) 실패: %v", err)
+			}
+			break
+		}
+		n, _ := collect(streams)
+		if n < candlePageSize {
+			break
+		}
+	}
+
+	return out
 }
 
 // aggregateMinuteCandles : 1초봉 JSON 문자열들을 받아 "완성된 분"의 1분봉으로
