@@ -47,10 +47,11 @@ spec:
             secretKeyRef:
               name: monitoring-secret
               key: redis-password
-        # [후순위] Stream 길이/소비자 lag 모니터링(과거 SSE 백로그·OOM 사전경보)을 켜려면
-        #   실제 stream 키를 지정해 아래 주석 해제:
-        # - name: REDIS_EXPORTER_CHECK_STREAMS
-        #   value: "ticker:binance,ticker:upbit,trade:binance,trade:upbit"
+        # Stream lag 모니터링: archiver가 consumer group으로 소비하는 유일한 스트림.
+        #   archiver가 밀리면 length/lag 증가 → MySQL 적재 지연 사전 감지(과거 ticker_latest stale 사건).
+        #   ticker:*:* 는 수백 개라 제외(지표 폭증 방지) — 필요 시 대표 키만 추가.
+        - name: REDIS_EXPORTER_CHECK_STREAMS
+          value: "candles:1s:stream"
         resources:
           requests:
             memory: "32Mi"
