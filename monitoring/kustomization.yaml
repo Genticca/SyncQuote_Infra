@@ -1,0 +1,20 @@
+# monitoring/kustomization.yaml
+# 모니터링 스택을 한 단위로 적용: kubectl apply -k monitoring/
+#
+# 사전 준비(한 번):
+#   1) cp secret.example.yaml secret.yaml  → 값 채우고  kubectl apply -f secret.yaml
+#   2) 호스트 exporter(node/mysqld) 기동 — host/README.md 참고
+#
+# secret.example.yaml은 템플릿이라 여기 resources에 넣지 않는다(실제 secret.yaml은 별도 apply).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - prometheus/configmap.yaml
+  - prometheus/deployment.yaml
+  - prometheus/service.yaml
+  - grafana/datasource-configmap.yaml
+  - grafana/deployment.yaml
+  - grafana/service.yaml
+  - redis-exporter/deployment.yaml
+  - redis-exporter/service.yaml

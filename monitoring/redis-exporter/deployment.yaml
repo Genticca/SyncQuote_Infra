@@ -1,0 +1,65 @@
+# redis-exporter/deployment.yaml
+# Redis 지표 수집기. 클러스터 Pod로 띄워 외부 Redis VM(sq-data-01)을 가리킨다.
+#   REDIS_ADDR는 기존 default/redis-collector-service(ClusterIP→Endpoints 172.16.116.101:6379)를
+#   교차 네임스페이스 DNS로 재사용 → IP가 바뀌어도 Endpoints만 고치면 됨.
+#   requirepass가 걸려 있으므로 REDIS_PASSWORD 필수(monitoring-secret).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-exporter
+  namespace: monitoring
+  labels:
+    app: redis-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-exporter
+  template:
+    metadata:
+      labels:
+        app: redis-exporter
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        node-role.kubernetes.io/worker: "true"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 59000                     # oliver006/redis_exporter 기본 비루트 uid
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: redis-exporter
+        image: oliver006/redis_exporter:v1.62.0
+        ports:
+        - containerPort: 9121
+          name: http
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        env:
+        - name: REDIS_ADDR
+          value: "redis://redis-collector-service.default.svc.cluster.local:6379"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: monitoring-secret
+              key: redis-password
+        # Stream lag 모니터링: archiver가 consumer group으로 소비하는 유일한 스트림.
+        #   archiver가 밀리면 length/lag 증가 → MySQL 적재 지연 사전 감지(과거 ticker_latest stale 사건).
+        #   ticker:*:* 는 수백 개라 제외(지표 폭증 방지) — 필요 시 대표 키만 추가.
+        - name: REDIS_EXPORTER_CHECK_STREAMS
+          value: "candles:1s:stream"
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "20m"
+          limits:
+            memory: "64Mi"
+            cpu: "100m"
+        readinessProbe:
+          httpGet: { path: /health, port: 9121 }
+          initialDelaySeconds: 5
+          periodSeconds: 15
