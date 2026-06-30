@@ -1,8 +1,8 @@
 # grafana/service.yaml
-# NodePort 30030 — "내부 전용" 경계.
-#   라우터(ipTime)는 8080만 외부 포워딩하므로 30030은 LAN에서만 닿고 인터넷에선 차단된다.
-#   추가로 노드 방화벽에서 30030을 LAN CIDR(172.16.116.0/24 등)만 허용 (host/README.md).
-# 접속: http://172.16.116.10:30030  (LAN→172.16.116.0/24 라우팅이 없으면 호스트 socat 또는 port-forward)
+# 내부 전용(ClusterIP) — 노드에 열린 포트 0. 외부/LAN 어디에도 노출하지 않는다.
+# 접근은 SSH 터널 또는 kubectl port-forward로만:
+#   kubectl -n monitoring port-forward svc/grafana 3000:3000     → http://localhost:3000
+#   원격: ssh -L 3000:localhost:3000 <user>@172.16.116.10  와 조합
 apiVersion: v1
 kind: Service
 metadata:
@@ -11,7 +11,7 @@ metadata:
   labels:
     app: grafana
 spec:
-  type: NodePort
+  type: ClusterIP
   selector:
     app: grafana
   ports:
@@ -19,4 +19,3 @@ spec:
     protocol: TCP
     port: 3000
     targetPort: 3000
-    nodePort: 30030

@@ -8,7 +8,7 @@
 ```
 [sq-k8s-01 172.16.116.10]                 [sq-mysql-01 .100]        [sq-data-01 .101]
   ┌─ monitoring ns ─────────────┐          node_exporter :9100      node_exporter :9100
-  │ Grafana (NodePort 30030) ◄─LAN          mysqld_exporter :9104    Redis :6379(requirepass)
+  │ Grafana (ClusterIP) ◄─SSH터널           mysqld_exporter :9104    Redis :6379(requirepass)
   │   └─ Prometheus (ClusterIP 9090)
   │        ├─ scrape node_exporter  .10/.100/.101:9100
   │        ├─ scrape mysqld_exporter .100:9104
@@ -17,8 +17,9 @@
   node_exporter :9100 (이 노드)
 ```
 
-- **내부 전용**: Prometheus/redis-exporter는 ClusterIP. Grafana만 **NodePort 30030**(라우터가
-  미포워딩 → 인터넷 차단, LAN 전용). 추가로 노드 방화벽에서 30030/9100/9104를 제한.
+- **내부 전용**: Grafana·Prometheus·redis-exporter 모두 **ClusterIP**(노드에 열린 포트 0).
+  Grafana 접근은 **SSH 터널 / kubectl port-forward로만** → 외부·LAN 노출 자체가 없음.
+  exporter 포트(9100/9104)는 DB VM 방화벽에서 Prometheus 노드(.10)만 허용.
 
 ## 설치 순서
 
@@ -48,10 +49,12 @@ kubectl -n monitoring port-forward svc/prometheus 9090:9090   # → http://local
 ```
 
 ### 4) Grafana 접속 & 대시보드
-- 접속: `http://172.16.116.10:30030` (admin / secret 비번)
-  - 평소 브라우저(192.168.0.x)에서 172.16.116.0/24 라우팅이 없으면:
-    - 호스트(192.168.0.3)에 `socat TCP-LISTEN:30030,fork,bind=<LAN IP> TCP:172.16.116.10:30030` (LAN 한정), 또는
-    - `kubectl -n monitoring port-forward svc/grafana 3000:3000`
+- 접속(둘 중 하나):
+  - 로컬에서 바로: `kubectl -n monitoring port-forward svc/grafana 3000:3000` → `http://localhost:3000`
+  - 원격(SSH 터널): `ssh -L 3000:localhost:30030 <user>@172.16.116.10` 는 NodePort 시절 방식 →
+    ClusterIP에선 `ssh -t <user>@172.16.116.10 'kubectl -n monitoring port-forward svc/grafana 30030:3000'`
+    후 다른 터미널 `ssh -L 3000:localhost:30030 <user>@172.16.116.10`, 또는 노드에서 port-forward 띄우고 그 포트를 `-L`로 터널
+  - admin / secret 비번
 - 데이터소스(Prometheus)는 자동 등록됨. **대시보드는 import**:
   - Node Exporter Full = **1860**
   - MySQL Overview = **14057** (또는 7362)
@@ -61,9 +64,8 @@ kubectl -n monitoring port-forward svc/prometheus 9090:9090   # → http://local
 
 ## 방화벽 (이중 방어, 노드/VM에서 설정)
 ```
-# sq-k8s-01: Grafana NodePort는 LAN만
-ufw allow from 172.16.116.0/24 to any port 30030 proto tcp
-# (필요 시 홈 LAN도) ufw allow from 192.168.0.0/24 to any port 30030 proto tcp
+# Grafana는 ClusterIP라 노드에 열린 포트가 없음 → NodePort 방화벽 규칙 불필요.
+# 접근은 SSH(22) 터널 / kubectl port-forward로만. SSH는 키 인증·최신 패치 유지.
 
 # DB VM(.100/.101): exporter 포트는 Prometheus 노드(.10)만
 ufw allow from 172.16.116.10 to any port 9100 proto tcp   # 두 VM
