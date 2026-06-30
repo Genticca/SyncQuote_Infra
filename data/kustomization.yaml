@@ -3,7 +3,9 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - redis-api.yaml              # in-cluster API용 Redis (Deployment+Service)
   - redis-collector.yaml        # sq-data-01 외부 Redis 연결 (Service+Endpoints)
-  - network-policy.yaml         # redis-api 접근 제어
   - collector-deployment.yaml   # collector + archiver (같은 이미지, RUN_MODE 분리)
+# [제거됨] redis-api.yaml + network-policy.yaml
+#   WAS가 redis-collector를 직접 읽도록 전환(REDIS_URL=redis-collector-service)하면서
+#   in-cluster redis-api를 사용하는 컴포넌트가 없어 제거. 대상이 사라진
+#   NetworkPolicy(redis-api-strict-policy)도 함께 제거.
