@@ -87,6 +87,23 @@ memsize = "${mem_mb}"
 numvcpus = "${cpus}"
 cpuid.coresPerSocket = "${cores_per_socket}"
 
+# PCIe 루트 포트 브리지 — e1000e 등 PCIe 장치가 꽂힐 슬롯을 제공한다.
+# 없으면 vmware-vmx가 "msg.pci.noslotavail: No PCIe slot available for Ethernet0"를
+# 띄우려다, nogui(headless)엔 표시할 UI가 없어 SIGSEGV(signal 11)로 죽는다.
+pciBridge0.present = "TRUE"
+pciBridge4.present = "TRUE"
+pciBridge4.virtualDev = "pcieRootPort"
+pciBridge4.functions = "8"
+pciBridge5.present = "TRUE"
+pciBridge5.virtualDev = "pcieRootPort"
+pciBridge5.functions = "8"
+pciBridge6.present = "TRUE"
+pciBridge6.virtualDev = "pcieRootPort"
+pciBridge6.functions = "8"
+pciBridge7.present = "TRUE"
+pciBridge7.virtualDev = "pcieRootPort"
+pciBridge7.functions = "8"
+
 $(network_line)
 ethernet0.present = "TRUE"
 ethernet0.virtualDev = "e1000e"
@@ -105,10 +122,11 @@ sata0:1.fileName = "${ISO_PATH}"
 sata0:1.startConnected = "TRUE"
 sata0:1.autodetect = "FALSE"
 
-usb.present = "TRUE"
-ehci.present = "TRUE"
-ehci.pciSlotNumber = "35"
-usb_xhci.present = "TRUE"
+# 서버 VM은 USB 불필요 → 비활성화(PCI 슬롯 절약). 하드코딩 슬롯 번호도 제거하고
+# 슬롯 배치는 vmware-vmx 자동 할당에 맡긴다.
+usb.present = "FALSE"
+ehci.present = "FALSE"
+usb_xhci.present = "FALSE"
 sound.present = "FALSE"
 
 floppy0.present = "FALSE"
@@ -116,7 +134,7 @@ tools.syncTime = "TRUE"
 isolation.tools.copy.disable = "FALSE"
 isolation.tools.paste.disable = "FALSE"
 
-svga.graphicsMemoryKB = "8388608"
+svga.graphicsMemoryKB = "262144"        # 256MB (기존 8388608=8GB는 비정상값)
 vmci0.present = "TRUE"
 
 checkpoint.vmState = ""
