@@ -72,7 +72,8 @@ spec:
               name: app-secret              # secret.yaml의 name과 일치
               key: mysql-password           # secret.yaml의 key와 일치
         - name: REDIS_URL
-          value: "redis-api-service"        # 원칙1: api 전용 Redis 분리
+          value: "redis-collector-service"  # 라이브 ticker/candle/market/meta는 전부 redis-collector에 적재됨.
+                                            # WAS는 순수 소비자(Redis에 쓰기 0건)라 redis-api는 미사용 → 스트림 소스를 직접 가리킨다.
         - name: REDIS_PORT
           value: "6379"
         - name: REDIS_PASSWORD              # [추가] redis-api에 requirepass 설정했으므로 반드시 필요
