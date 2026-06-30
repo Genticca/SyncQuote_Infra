@@ -1,0 +1,7 @@
+resources:
+  - app/
+  - mysql/
+  - redis/
+  - collector-deployment.yaml
+  - network-policy.yaml
+  - pdb.yaml
