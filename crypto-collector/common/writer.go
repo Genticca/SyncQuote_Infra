@@ -29,6 +29,11 @@ const DataTTL = 90 * time.Second
 // (TTL + 개수상한 이중 안전장치. 정상엔 영향 없고, 비정상엔 상한 보장)
 const candleMaxLen = 120
 
+// tickerMaxLen : 현재가 Stream 개수 상한. ticker는 코인별로 끊임없이 XAdd되므로
+// 상한이 없으면 스트림이 무한 증가해 redis-collector 메모리를 잠식한다(noeviction).
+// SSE consumer는 최신만 읽으므로 최근 N건이면 충분. (근사 트림으로 성능 영향 최소화)
+const tickerMaxLen = 1000
+
 // Writer : Redis 클라이언트를 감싼 공통 저장기.
 type Writer struct {
 	rdb *redis.Client
@@ -78,6 +83,8 @@ func (w *Writer) SaveTicker(ctx context.Context, t TickerData) {
 	pipe := w.rdb.Pipeline()
 	pipe.XAdd(ctx, &redis.XAddArgs{
 		Stream: key,
+		MaxLen: tickerMaxLen, // 무한 증가 방지 (Approx=근사 트림)
+		Approx: true,
 		Values: map[string]interface{}{
 			"exchange":             t.Exchange,
 			"trade_price":          t.TradePrice,

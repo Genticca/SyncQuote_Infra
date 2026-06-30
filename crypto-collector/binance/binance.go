@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -247,14 +246,14 @@ func runOneConn(ctx context.Context, w *common.Writer, symbols []string) {
 			default:
 			}
 
-			// 읽기에 1초 deadline. 메시지가 없어도 1초마다 깨어나 ctx 확인.
-			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			// 무수신 60초면 죽은 연결로 간주. ctx 종료는 위 select 에서 처리.
+			// [버그수정] 1초 deadline 후 continue(같은 연결 재read)는 deadline이 프레임
+			// 수신 도중 발동 시 gorilla 읽기 상태를 깨 "repeated read on failed websocket
+			// connection" panic을 냈다. → timeout/끊김 모두 break하여 재연결.
+			conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
-				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					continue // deadline 초과는 정상 — ctx 확인하러 위로
-				}
-				log.Println("[binance] 연결 끊김, 재연결:", err)
+				log.Println("[binance] 연결 끊김/무수신, 재연결:", err)
 				break
 			}
 
