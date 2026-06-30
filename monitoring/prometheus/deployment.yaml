@@ -1,0 +1,75 @@
+# prometheus/deployment.yaml
+# Prometheus 서버. 단일 노드 프로토타입이라 데이터는 emptyDir(파드 재시작 시 초기화).
+#   영속이 필요하면 PVC(StorageClass) 또는 hostPath로 교체 — 아래 volumes 주석 참고.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app: prometheus
+spec:
+  replicas: 1                               # TSDB는 단일 인스턴스(샤딩/HA는 범위 밖)
+  strategy:
+    type: Recreate                          # emptyDir 단일 볼륨이라 롤링 대신 재생성
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      automountServiceAccountToken: false   # 정적 타깃이라 K8s API 불필요
+      nodeSelector:
+        node-role.kubernetes.io/worker: "true"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534                     # nobody
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: prometheus
+        image: prom/prometheus:v2.53.1
+        args:
+          - --config.file=/etc/prometheus/prometheus.yml
+          - --storage.tsdb.path=/prometheus
+          - --storage.tsdb.retention.time=15d
+          - --web.enable-lifecycle           # POST /-/reload 로 무중단 설정 리로드
+        ports:
+        - containerPort: 9090
+          name: http
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "768Mi"
+            cpu: "500m"
+        readinessProbe:
+          httpGet: { path: /-/ready, port: 9090 }
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: { path: /-/healthy, port: 9090 }
+          initialDelaySeconds: 20
+          periodSeconds: 20
+        volumeMounts:
+        - name: config
+          mountPath: /etc/prometheus
+        - name: data
+          mountPath: /prometheus
+      volumes:
+      - name: config
+        configMap:
+          name: prometheus-config
+      - name: data
+        emptyDir: {}
+        # 영속 필요 시 ↓ 로 교체 (StorageClass 또는 사전 생성 PV 필요)
+        # persistentVolumeClaim:
+        #   claimName: prometheus-data

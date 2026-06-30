@@ -1,0 +1,7 @@
+# exporter.my.cnf.example  →  /etc/mysqld_exporter/.my.cnf 로 복사 후 비번 채우기 (chmod 600)
+# mysqld_exporter가 로컬 MySQL에 접속할 때 쓰는 자격증명. 전용 최소권한 계정만 사용.
+[client]
+user=exporter
+password=CHANGE_ME
+host=localhost
+port=3306

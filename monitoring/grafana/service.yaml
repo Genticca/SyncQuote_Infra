@@ -1,0 +1,22 @@
+# grafana/service.yaml
+# NodePort 30030 — "내부 전용" 경계.
+#   라우터(ipTime)는 8080만 외부 포워딩하므로 30030은 LAN에서만 닿고 인터넷에선 차단된다.
+#   추가로 노드 방화벽에서 30030을 LAN CIDR(172.16.116.0/24 등)만 허용 (host/README.md).
+# 접속: http://172.16.116.10:30030  (LAN→172.16.116.0/24 라우팅이 없으면 호스트 socat 또는 port-forward)
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app: grafana
+spec:
+  type: NodePort
+  selector:
+    app: grafana
+  ports:
+  - name: http
+    protocol: TCP
+    port: 3000
+    targetPort: 3000
+    nodePort: 30030

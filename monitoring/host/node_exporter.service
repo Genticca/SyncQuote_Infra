@@ -1,0 +1,30 @@
+# node_exporter.service
+# 대상: sq-k8s-01(172.16.116.10) / sq-mysql-01(.100) / sq-data-01(.101) — 3개 VM 모두에 설치.
+# 설치:
+#   useradd --no-create-home --shell /usr/sbin/nologin node_exporter
+#   # https://github.com/prometheus/node_exporter/releases (v1.8.2) tar 풀어
+#   install -m 0755 node_exporter /usr/local/bin/node_exporter
+#   cp node_exporter.service /etc/systemd/system/node_exporter.service
+#   systemctl daemon-reload && systemctl enable --now node_exporter
+#   curl -s localhost:9100/metrics | head   # 확인
+[Unit]
+Description=Prometheus Node Exporter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=node_exporter
+Group=node_exporter
+Type=simple
+# 사설망 인터페이스에만 바인딩하고 싶으면 --web.listen-address=172.16.116.X:9100 으로 지정
+ExecStart=/usr/local/bin/node_exporter --web.listen-address=:9100
+Restart=on-failure
+RestartSec=5
+# 하드닝
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

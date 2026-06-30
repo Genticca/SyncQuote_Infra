@@ -1,0 +1,41 @@
+# prometheus/configmap.yaml
+# Prometheus 스크레이프 설정. 외부 VM(네이티브 exporter)은 static_configs로 IP:port 직접 지정.
+#   - node_exporter  :9100  (sq-k8s-01 / sq-mysql-01 / sq-data-01, 호스트 systemd)
+#   - mysqld_exporter:9104  (sq-mysql-01 호스트 systemd, localhost MySQL 조회)
+#   - redis_exporter :9121  (클러스터 Pod, ClusterIP redis-exporter)
+# Prometheus Pod는 sq-k8s-01(172.16.116.10)에서 돌고, 외부 VM으로 나가는 트래픽은
+# Calico natOutgoing으로 노드 IP(172.16.116.10)로 SNAT된다 → DB VM 방화벽은 .10만 허용하면 됨.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    scrape_configs:
+      - job_name: prometheus
+        static_configs:
+          - targets: ['localhost:9090']
+
+      - job_name: node
+        static_configs:
+          - targets: ['172.16.116.10:9100']
+            labels: { instance_name: sq-k8s-01 }
+          - targets: ['172.16.116.100:9100']
+            labels: { instance_name: sq-mysql-01 }
+          - targets: ['172.16.116.101:9100']
+            labels: { instance_name: sq-data-01 }
+
+      - job_name: mysql
+        static_configs:
+          - targets: ['172.16.116.100:9104']
+            labels: { instance_name: sq-mysql-01 }
+
+      - job_name: redis
+        static_configs:
+          - targets: ['redis-exporter:9121']
+            labels: { instance_name: sq-data-01-redis-collector }
