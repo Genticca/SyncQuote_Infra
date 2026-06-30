@@ -1,0 +1,10 @@
+# 00-namespace.yaml
+# 부하 발생기 전용 네임스페이스.
+# 측정 대상(api-server, default ns)과 분리해 "kubectl delete namespace loadtest"
+# 한 줄로 부하기 리소스를 통째로 정리하기 위함.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: loadtest
+  labels:
+    purpose: load-testing

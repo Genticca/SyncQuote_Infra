@@ -1,0 +1,88 @@
+# 10-k6-script-configmap.yaml
+# A안(K8s 자체 부하)용 k6 시나리오.
+# 외부용 hpa-load-test.js와 동일한 로직(setup 실데이터 + 경로분리 + responseType:none)이되,
+# 클러스터 내부에서 실행되므로 BASE_URL 기본값을 Service DNS로 둔다.
+#
+# ⚠️ 단일 노드 구성에서는 부하기 Pod와 측정 대상이 같은 노드 자원을 나눠 쓴다.
+#    정확한 용량 측정은 B안(외부 VM, web/) 권장. A안은 "HPA가 도는가" 빠른 확인용.
+#
+# 호출 경로:
+#   기본: api-service 직접 호출 (Ingress 우회 → 순수 API+HPA 측정)
+#   Ingress 경유로 바꾸려면 script.js의 BASE_URL 주석 참고.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k6-script
+  namespace: loadtest
+data:
+  script.js: |
+    import http from 'k6/http';
+    import { check, sleep } from 'k6';
+    import { Counter } from 'k6/metrics';
+
+    // 클러스터 내부 실행 → K8s Service DNS(FQDN)를 기본값으로.
+    //   기본: api-service 직접 호출 (Ingress 우회)
+    //   Ingress 경유: 아래 주석을 활성화하고 위 BASE_URL을 주석 처리
+    const BASE_URL = (__ENV.BASE_URL || 'http://api-service.default.svc.cluster.local').replace(/\/$/, '');
+    // const BASE_URL = 'http://ingress-nginx-controller.ingress-nginx.svc.cluster.local';
+
+    const MAX_VUS = parseInt(__ENV.MAX_VUS || '150', 10);
+    if (Number.isNaN(MAX_VUS) || MAX_VUS <= 0) {
+        throw new Error(`MAX_VUS는 1 이상의 정수여야 합니다: "${__ENV.MAX_VUS}"`);
+    }
+
+    const EXCHANGES = ['UPBIT', 'BINANCE'];
+    const INTERVALS = ['1s', '1m'];
+    const tickerErrors = new Counter('ticker_errors');
+    const candleErrors = new Counter('candle_errors');
+
+    export const options = {
+      scenarios: {
+        hpa_scale_demo: {
+          executor: 'ramping-vus',
+          startVUs: 0,
+          stages: [
+            { duration: '2m', target: MAX_VUS },   // scale-out 유발
+            { duration: '4m', target: MAX_VUS },   // CPU 70% 초과 유지 (REPLICAS 2→4 관찰)
+            { duration: '2m', target: 0 },         // scale-in 관찰
+          ],
+          gracefulRampDown: '30s',
+        },
+      },
+    };
+
+    export function setup() {
+      const res = http.get(`${BASE_URL}/api/v1/markets`);
+      if (res.status !== 200) {
+        throw new Error(`마켓 목록 조회 실패 (status=${res.status}). BASE_URL 확인: ${BASE_URL}`);
+      }
+      const body = JSON.parse(res.body);
+      const markets = (body.data || []).filter((m) => m.exchange && m.market);
+      if (markets.length === 0) {
+        throw new Error('마켓 목록이 비어있습니다. Collector 적재 여부 확인.');
+      }
+      return { markets };
+    }
+
+    function pick(a) { return a[Math.floor(Math.random() * a.length)]; }
+
+    export default function (data) {
+      const market = pick(data.markets);
+      const s = Math.random();
+      if (s < 0.4) {
+        const ex = pick(EXCHANGES);
+        const r = http.get(`${BASE_URL}/api/v1/tickers?exchange=${ex}&category=ALL&limit=100`,
+          { tags: { name: 'tickers_list' }, responseType: 'none' });
+        if (!check(r, { 'tickers 200': (x) => x.status === 200 })) tickerErrors.add(1);
+      } else if (s < 0.7) {
+        const r = http.get(`${BASE_URL}/api/v1/tickers/${market.exchange}/${market.market}`,
+          { tags: { name: 'ticker_single' }, responseType: 'none' });
+        if (!check(r, { 'ticker 200': (x) => x.status === 200 })) tickerErrors.add(1);
+      } else {
+        const iv = pick(INTERVALS);
+        const r = http.get(`${BASE_URL}/api/v1/candles?exchange=${market.exchange}&market=${market.market}&interval=${iv}&limit=200`,
+          { tags: { name: `candles_${iv}` }, responseType: 'none' });
+        if (!check(r, { 'candles 200': (x) => x.status === 200 })) candleErrors.add(1);
+      }
+      sleep(Math.random() * 0.5 + 0.1);
+    }
