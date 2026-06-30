@@ -1,0 +1,10 @@
+# 비밀 정보 — 절대 커밋 금지 (형태 참고는 secret.example.yaml)
+**/secret.yaml
+
+# Go 빌드 산출물
+crypto-collector/collector
+crypto-collector/**/*.test
+
+# OS / 에디터
+.DS_Store
+*.swp

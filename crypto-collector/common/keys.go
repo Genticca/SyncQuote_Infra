@@ -12,8 +12,16 @@
 package common
 
 // SecondCandleKey : 1초봉 List 키. 예) candles:1s:upbit:KRW-BTC
+// (API 실시간 차트용 캐시 — TTL/개수상한. 유실돼도 무해)
 func SecondCandleKey(exchange, code string) string {
 	return "candles:1s:" + exchange + ":" + code
+}
+
+// CandleStreamKey : 1초봉 영속화용 Stream 키 (아카이빙 전용, 단일 스트림).
+// List와 분리해 용도별 정책을 따로 둔다: List=실시간(유실 무해),
+// Stream=MySQL 적재 보장(아카이버가 ack할 때까지 보존).
+func CandleStreamKey() string {
+	return "candles:1s:stream"
 }
 
 // TickerKey : 실시간 현재가 Stream 키. 예) ticker:binance:BTCUSDT

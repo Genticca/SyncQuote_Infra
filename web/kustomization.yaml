@@ -1,0 +1,19 @@
+# web/kustomization.yaml
+# Web Service VM(sq-k8s-01) 계층을 한 단위로 적용: kubectl apply -k web/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - api-deployment.yaml
+  - api-service.yaml
+  - front-deployment.yaml
+  - front-service.yaml
+  - ingress.yaml
+  - pdb.yaml
+  - hpa.yaml
+# [확장 여지 — 지금은 비활성]
+#   namespace: syncquote          # 전용 namespace로 한 번에 이동 (③c). 켜면 모든 리소스에 적용.
+#   images:                       # CI가 'kubectl set image' 대신 여기 newTag만 갱신 (④)
+#   - name: ghcr.io/genticca/syncquote-was
+#     newTag: <sha>
+#   - name: ghcr.io/genticca/syncquote-front
+#     newTag: <sha>

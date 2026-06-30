@@ -1,0 +1,9 @@
+# data/kustomization.yaml
+# Redis(+외부 연결) / Collector / Archiver 계층: kubectl apply -k data/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - redis-api.yaml              # in-cluster API용 Redis (Deployment+Service)
+  - redis-collector.yaml        # sq-data-01 외부 Redis 연결 (Service+Endpoints)
+  - network-policy.yaml         # redis-api 접근 제어
+  - collector-deployment.yaml   # collector + archiver (같은 이미지, RUN_MODE 분리)

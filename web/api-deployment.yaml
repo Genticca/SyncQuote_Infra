@@ -21,13 +21,21 @@ spec:
       automountServiceAccountToken: false   # 불필요한 K8s API 접근 차단 / 보안 강화
       nodeSelector:
         node-role.kubernetes.io/worker: "true"
+      imagePullSecrets:
+      - name: ghcr-secret                   # GHCR private 이미지 pull용 (docker-registry secret)
       containers:
       - name: api-server
-        image: my-repo/bitcoin-dashboard:v1.0.0  # 단일 이미지 / 프로파일로 모드 분기
+        image: ghcr.io/genticca/syncquote-was:latest  # CI(deploy-prod.yml)가 배포 시 :sha로 교체 / SPRING_PROFILES_ACTIVE=api → prod
         ports:
         - containerPort: 80                 # 앱이 실제 listening하는 포트
           name: http
           protocol: TCP
+        securityContext:                    # [하드닝] 무위험 베이스라인만.
+                                            # 포트 80(<1024) 바인딩 + 루트 기반 JRE 이미지라
+                                            # runAsNonRoot/drop ALL은 이미지 수정(nonroot+8080) 후 가능.
+          allowPrivilegeEscalation: false   # setuid 권한 상승 차단 (루트여도 안전)
+          seccompProfile:
+            type: RuntimeDefault            # 기본 syscall 필터 적용
         resources:
           requests:
             memory: "256Mi"                 # requests == limits → Guaranteed 등급

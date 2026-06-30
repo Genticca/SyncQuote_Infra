@@ -25,6 +25,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
@@ -50,9 +51,14 @@ func getEnv(key, fallback string) string {
 }
 
 func main() {
-	// Redis 연결 (업비트·바이낸스가 같은 Redis를 공유).
+	// Redis 연결 (수집/아카이빙 모두 동일 Redis를 공유).
+	// Password: requirepass가 걸린 Redis용. 미설정이면 빈 문자열(무인증)이라 안전.
 	redisAddr := getEnv("REDIS_ADDR", "localhost:6379")
-	rdb := redis.NewClient(&redis.Options{Addr: redisAddr, DB: 0})
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     redisAddr,
+		Password: os.Getenv("REDIS_PASSWORD"),
+		DB:       0,
+	})
 	defer rdb.Close()
 
 	baseCtx := context.Background()
@@ -65,35 +71,50 @@ func main() {
 	ctx, stop := signal.NotifyContext(baseCtx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// MySQL 연결 (선택적 — 실패해도 수집은 계속, 아카이빙만 비활성).
-	// 테이블은 팀원 SQL(crypto_data 스키마)로 "수동 생성"하므로, 여기서
-	// 테이블을 만들지 않는다. 연결만 확인한다.
-	mysqlDSN := buildMySQLDSN()
-	dbConn, err := common.ConnectMySQL(ctx, mysqlDSN)
-	if err != nil {
-		log.Printf("MySQL 연결 실패 (수집은 계속, 아카이빙 비활성): %v", err)
-		dbConn = nil
-	} else {
-		defer dbConn.Close()
-		log.Println("MySQL 연결 성공!")
+	// RUN_MODE: all(기본) | collector(수집→Redis만) | archiver(연산→MySQL만).
+	// 같은 이미지를 collector/archiver 두 Deployment로 분리 운영하기 위한 스위치.
+	mode := getEnv("RUN_MODE", "all")
+	runCollector := mode != "archiver"
+	runArchiver := mode != "collector"
+	log.Printf("기동 모드: %s (수집=%v, 아카이빙=%v)", mode, runCollector, runArchiver)
+
+	// MySQL 연결은 아카이빙 모드에서만 필요. (수집 전용 모드는 MySQL 불필요)
+	// 테이블은 팀원 SQL(crypto_data 스키마)로 수동 생성하므로 여기서 만들지 않는다.
+	var dbConn *sql.DB
+	if runArchiver {
+		if conn, err := common.ConnectMySQL(ctx, buildMySQLDSN()); err != nil {
+			log.Printf("MySQL 연결 실패 (아카이빙 비활성): %v", err)
+		} else {
+			dbConn = conn
+			defer dbConn.Close()
+			log.Println("MySQL 연결 성공!")
+		}
 	}
 
 	// 공통 저장기 한 개를 두 어댑터가 공유.
 	writer := common.NewWriter(rdb)
 
-	// WaitGroup: 두 어댑터가 띄우는 내부 goroutine들의 완료를 추적한다.
+	// WaitGroup: 어댑터/아카이버가 띄우는 내부 goroutine들의 완료를 추적한다.
 	var wg sync.WaitGroup
 
-	// 두 거래소를 동시에 수집. 각 Run이 자기 내부 goroutine을 wg에 등록한다.
-	upbit.Run(ctx, writer, &wg)
-	binance.Run(ctx, writer, &wg)
+	// 수집: 업비트 + 바이낸스 동시 수집. (archiver 전용 모드면 건너뜀)
+	if runCollector {
+		upbit.Run(ctx, writer, &wg)
+		binance.Run(ctx, writer, &wg)
+	}
 
-	// Redis → MySQL 60초 배치 아카이빙. (TTL 90초 > 주기 60초 안전마진)
-	archiver := common.NewArchiver(rdb, dbConn)
-	wg.Add(1)
-	go func() { defer wg.Done(); archiver.Run(ctx, 60*time.Second) }()
+	// 영속화: Redis Stream → MySQL 아카이빙 (ack-then-trim). collector 전용 모드면 건너뜀.
+	if runArchiver {
+		common.EnsureCandleGroup(ctx, rdb) // consumer group 보장(없으면 생성, 기존 백로그부터)
+		archiver := common.NewArchiver(rdb, dbConn)
+		wg.Add(1)
+		go func() { defer wg.Done(); archiver.Run(ctx, 60*time.Second) }()
+	}
 
-	log.Println("통합 수집 중! 업비트 + 바이낸스 + 아카이빙 (종료: Ctrl+C)")
+	// K8s liveness/readiness Probe용 헬스 엔드포인트(/healthz).
+	common.StartHealthServer(ctx, rdb, dbConn, ":"+getEnv("HEALTH_PORT", "8080"))
+
+	log.Printf("실행 중! 모드=%s (종료: Ctrl+C)", mode)
 
 	// 종료 신호 대기.
 	<-ctx.Done()
