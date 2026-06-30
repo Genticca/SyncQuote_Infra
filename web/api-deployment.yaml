@@ -38,11 +38,11 @@ spec:
             type: RuntimeDefault            # 기본 syscall 필터 적용
         resources:
           requests:
-            memory: "256Mi"                 # requests == limits → Guaranteed 등급
+            memory: "1Gi"                   # requests == limits → Guaranteed 등급 (SSE 초기 backlog 적재 대비 상향)
             cpu: "200m"                     # 0.2 core 보장 / 1000m = 1core
             ephemeral-storage: "1Gi"        # 스토리지 고정 / Guaranteed 완전체
           limits:
-            memory: "256Mi"                 # 원칙2: 메모리 완전 Fix
+            memory: "1Gi"                   # 원칙2: 메모리 완전 Fix
             cpu: "500m"                     # 최대 0.5 core / 초과 시 throttling
             ephemeral-storage: "1Gi"
         livenessProbe:                      # 컨테이너 생존 여부 체크 / 실패 시 Pod 재시작
@@ -60,6 +60,8 @@ spec:
           periodSeconds: 10
           failureThreshold: 3
         env:
+        - name: JAVA_TOOL_OPTIONS
+          value: "-XX:MaxRAMPercentage=70.0" # 컨테이너 메모리(1Gi)의 70%를 JVM 힙으로. 기본(25%)이면 힙이 작아 SSE backlog 적재 시 OOM.
         - name: SPRING_PROFILES_ACTIVE
           value: "api"                      # api 모드로 기동
         - name: MODE
