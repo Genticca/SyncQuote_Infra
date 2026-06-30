@@ -81,6 +81,12 @@ type klineMessage struct {
 		Low       json.Number `json:"l"`
 		Volume    json.Number `json:"v"`
 		IsClosed  bool        `json:"x"` // ★ 봉 마감 여부
+
+		// 대소문자 fold 충돌 흡수용 (값 미사용). 없으면 페이로드 뒤쪽의
+		// "T"(봉 종료시각)가 StartTime("t")을, "V"(테이커 매수 base 거래량)가 Volume("v")을 덮어쓴다.
+		CloseTime    int64       `json:"T"` // 봉 종료시각    — StartTime("t") 오염 방지
+		TakerBuyBase json.Number `json:"V"` // 테이커 매수 거래량 — Volume("v") 오염 방지
+		LastTradeID  int64       `json:"L"` // 마지막 체결 ID  — Low("l") 방어(순서상 무해하나 명시)
 	} `json:"k"`
 }
 
@@ -95,6 +101,14 @@ type binanceTicker struct {
 	BaseVolume     json.Number `json:"v"`
 	QuoteVolume    json.Number `json:"q"`
 	EventTime      int64       `json:"E"`
+
+	// 대소문자 fold 충돌 흡수용 (값 자체는 사용하지 않아도 됨).
+	// Go encoding/json은 정확 일치 필드가 없으면 "대소문자 무시"로 첫 일치 필드에 값을 넣는다.
+	// 아래 전용 필드가 없으면 페이로드 뒤쪽의 "C"(통계창 종료시각=현재 ms)가 LastPrice("c")를,
+	// "L"(마지막 체결 ID)이 LowPrice("l")를 덮어써 현재가/저가가 타임스탬프·ID로 오염된다.
+	StatCloseTime json.Number `json:"C"` // 통계창 종료시각(ms) — LastPrice("c") 오염 방지
+	LastTradeID   json.Number `json:"L"` // 마지막 체결 ID     — LowPrice("l") 오염 방지
+	LastQty       json.Number `json:"Q"` // 마지막 체결 수량   — QuoteVolume("q") 순서 의존성 제거
 }
 
 func fetch(url string) ([]byte, error) {
