@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -197,16 +196,16 @@ func runWebSocket(ctx context.Context, w *common.Writer, agg *common.Aggregator,
 			default:
 			}
 
-			// 읽기에 1초 deadline을 건다. 메시지가 안 와도 1초마다 깨어나
-			// 위 ctx.Done() 체크로 돌아갈 수 있어, 종료가 지연되지 않는다.
-			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			// 무수신 60초면 죽은 연결로 간주(업비트는 수시로 데이터가 옴). ctx 종료는
+			// 위 select 에서 처리한다.
+			// [버그수정] 이전엔 1초 deadline 후 timeout이면 continue(같은 연결 재read)였는데,
+			// deadline이 프레임 수신 도중 발동하면 gorilla 연결의 읽기 상태가 깨져 이후
+			// ReadMessage가 "repeated read on failed websocket connection" panic을 내
+			// 프로세스가 죽었다. → timeout이든 끊김이든 break하여 같은 연결에 재read하지 않고 재연결.
+			conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
-				// deadline 초과(timeout)는 정상 — ctx 확인하러 루프 위로.
-				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					continue
-				}
-				log.Println("[upbit] 연결 끊김, 재연결:", err)
+				log.Println("[upbit] 연결 끊김/무수신, 재연결:", err)
 				break
 			}
 
