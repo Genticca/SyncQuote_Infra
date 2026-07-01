@@ -1,7 +1,8 @@
 # 10-k6-script-configmap.yaml
 # A안(K8s 자체 부하)용 k6 시나리오.
-# 외부용 hpa-load-test.js와 동일한 로직(setup 실데이터 + 경로분리 + responseType:none)이되,
-# 클러스터 내부에서 실행되므로 BASE_URL 기본값을 Service DNS로 둔다.
+# 외부용 hpa-load-test.js와 동일한 로직(setup 실데이터 + 경로분리 + responseType:none
+# + 상태코드 분류/엔드포인트별 성공률·지연 메트릭)이되, 클러스터 내부 실행이므로
+# BASE_URL 기본값을 Service DNS로 둔다.
 #
 # ⚠️ 단일 노드 구성에서는 부하기 Pod와 측정 대상이 같은 노드 자원을 나눠 쓴다.
 #    정확한 용량 측정은 B안(외부 VM, web/) 권장. A안은 "HPA가 도는가" 빠른 확인용.
@@ -18,7 +19,7 @@ data:
   script.js: |
     import http from 'k6/http';
     import { check, sleep } from 'k6';
-    import { Counter } from 'k6/metrics';
+    import { Counter, Rate, Trend } from 'k6/metrics';
 
     // 클러스터 내부 실행 → K8s Service DNS(FQDN)를 기본값으로.
     //   기본: api-service 직접 호출 (Ingress 우회)
@@ -33,8 +34,37 @@ data:
 
     const EXCHANGES = ['UPBIT', 'BINANCE'];
     const INTERVALS = ['1s', '1m'];
-    const tickerErrors = new Counter('ticker_errors');
-    const candleErrors = new Counter('candle_errors');
+
+    // ── 정확한 결과 포착용 커스텀 메트릭 ──────────────────────────────────
+    // 상태코드를 분류해 "무엇으로 실패했는가"를 남긴다(404 / 400 / 5xx / 타임아웃).
+    const reqSuccess = new Rate('req_success'); // 전체 성공률(2xx 비율)
+    const status2xx = new Counter('http_status_2xx');
+    const status4xx = new Counter('http_status_4xx');
+    const status5xx = new Counter('http_status_5xx');
+    const statusNet = new Counter('http_status_network_err'); // status 0: 타임아웃/연결 실패
+
+    // 엔드포인트별 성공률 + 지연(ms) — 어떤 경로가 먼저 느려지는지 분해해서 본다.
+    const ep = {
+      tickers_list: { ok: new Rate('ok_tickers_list'), dur: new Trend('dur_tickers_list', true) },
+      ticker_single: { ok: new Rate('ok_ticker_single'), dur: new Trend('dur_ticker_single', true) },
+      candles_1s: { ok: new Rate('ok_candles_1s'), dur: new Trend('dur_candles_1s', true) },
+      candles_1m: { ok: new Rate('ok_candles_1m'), dur: new Trend('dur_candles_1m', true) },
+    };
+
+    // responseType:'none' 이어도 res.status / res.timings 는 정확히 채워진다(바디만 버림).
+    function record(res, name) {
+      const ok = res.status === 200;
+      reqSuccess.add(ok);
+      if (ep[name]) {
+        ep[name].ok.add(ok);
+        ep[name].dur.add(res.timings.duration);
+      }
+      if (res.status === 0) statusNet.add(1);
+      else if (res.status >= 500) status5xx.add(1);
+      else if (res.status >= 400) status4xx.add(1);
+      else status2xx.add(1);
+      check(res, { [`${name} 200`]: () => ok });
+    }
 
     export const options = {
       scenarios: {
@@ -49,6 +79,8 @@ data:
           gracefulRampDown: '30s',
         },
       },
+      // 의도적 과부하 테스트라 하드 임계치는 두지 않는다. 위 커스텀 메트릭으로 정확히 분해해 판단.
+      // thresholds: { req_success: ['rate>0.95'], http_status_5xx: ['count<1'] },
     };
 
     export function setup() {
@@ -73,16 +105,16 @@ data:
         const ex = pick(EXCHANGES);
         const r = http.get(`${BASE_URL}/api/v1/tickers?exchange=${ex}&category=ALL&limit=100`,
           { tags: { name: 'tickers_list' }, responseType: 'none' });
-        if (!check(r, { 'tickers 200': (x) => x.status === 200 })) tickerErrors.add(1);
+        record(r, 'tickers_list');
       } else if (s < 0.7) {
         const r = http.get(`${BASE_URL}/api/v1/tickers/${market.exchange}/${market.market}`,
           { tags: { name: 'ticker_single' }, responseType: 'none' });
-        if (!check(r, { 'ticker 200': (x) => x.status === 200 })) tickerErrors.add(1);
+        record(r, 'ticker_single');
       } else {
         const iv = pick(INTERVALS);
         const r = http.get(`${BASE_URL}/api/v1/candles?exchange=${market.exchange}&market=${market.market}&interval=${iv}&limit=200`,
           { tags: { name: `candles_${iv}` }, responseType: 'none' });
-        if (!check(r, { 'candles 200': (x) => x.status === 200 })) candleErrors.add(1);
+        record(r, `candles_${iv}`);
       }
       sleep(Math.random() * 0.5 + 0.1);
     }
